@@ -1,0 +1,136 @@
+#include <algorithm>
+#include <iosfwd>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+
+#include <caffe/caffe.hpp>
+
+using namespace std;
+using namespace cv;
+using namespace caffe;
+
+void mat_helper(cv::Mat mat) {
+	for (int i = 0; i < mat.rows; i++) {
+		for (int j = 0; j < mat.cols; j++) {
+			cout << mat.at<float>(i, j) << ' ';
+		}
+		cout <<endl;
+	}
+}
+
+float dotProduct(const vector<float>& v1, const vector<float>& v2){
+	assert(v1.size() == v2.size());
+	float ret = 0.0;
+	for (vector<float>::size_type i = 0; i != v1.size(); ++i)
+	{
+		ret += v1[i] * v2[i];
+	}
+	return ret;
+}
+
+float module(const vector<float>& v)
+{
+	float ret = 0.0;
+	for (vector<float>::size_type i = 0; i != v.size(); ++i)
+	{
+		ret += v[i] * v[i];
+	}
+	return sqrt(ret);
+}
+
+// 夹角余弦
+float cosine(const vector<float>& v1, const vector<float>& v2)
+{
+	assert(v1.size() == v2.size());
+	return dotProduct(v1, v2) / (module(v1) * module(v2));
+}
+
+
+int main(int argc, char** argv) {
+
+	string network = "D:/LCNN_TRAIN-master/prototxt/LightenedCNN_C_deploy.prototxt";
+	string weights = "D:/LCNN_TRAIN-master/models/LightenedCNN_C.caffemodel";
+	string image = "D:/LCNN_TRAIN-master/demo/y1.jpg";
+
+	Net<float> *net = new Net<float>(network,TEST);
+
+	net->CopyTrainedLayersFrom(weights);
+
+	Caffe::set_mode(Caffe::CPU);
+	double dur;
+	clock_t start, end;
+	start = clock();
+	Mat img2;
+	LOG(INFO) << "Reading " << image;
+	img2 = imread(image, CV_LOAD_IMAGE_GRAYSCALE);
+	img2.convertTo(img2, CV_32FC1);
+	Size dsize = Size(128,128);
+	Mat img = Mat(dsize, CV_32FC1);
+	resize(img2, img, dsize, 0,0,INTER_CUBIC);
+	Mat img3 = img / 255.0;
+	//mat_helper(img3);
+
+	if (img3.channels() * img3.rows * img3.cols != net->input_blobs()[0]->count())
+		LOG(FATAL) << "Incorrect " << image << ", resize to correct dimensions.\n";
+	// prepare data into array
+	float *data = (float*)malloc( img3.rows * img3.cols * sizeof(float));
+
+	int pix_count = 0;
+
+	for (int i = 0; i < img3.rows; ++i) {
+		for (int j = 0; j < img3.cols; ++j) {
+			float pix = img3.at<float>(i, j);
+			float* p = (float*)(data);
+			p[pix_count] = pix;
+			++pix_count;
+		}
+	}
+
+	vector<Blob<float>*> in_blobs = net->input_blobs();
+	in_blobs[0]->Reshape(1, 1, img3.rows, img3.cols);
+	net->Reshape();
+
+	in_blobs[0]->set_cpu_data((float*)data);
+
+	net->Forward();
+	const boost::shared_ptr<Blob<float> > feature_blob = net->blob_by_name("eltwise_fc1");//获取该层特征
+
+	float feat_dim = feature_blob->count() / feature_blob->num();//计算特征维度
+	cout << feat_dim << endl;
+	const float* data_ptr = (const float *)feature_blob->cpu_data();//特征块数据
+
+	float buf[256];
+	vector<float> feat1;
+	FILE *fp;
+	fp = fopen("eltwise_fc1.out", "rb");
+	//fwrite(data_ptr, sizeof(float), feature_blob->count(), fp);
+	fread(buf,sizeof(float),256,fp);
+	for (int i = 0; i < 256; i++)
+	{
+		feat1.push_back(buf[i]);
+	}
+	fclose(fp);
+
+	vector<float> feat2;
+
+	for (int i = 0; i < feat_dim; i++)
+	{
+		feat2.push_back(*data_ptr);
+		if (i < feat_dim - 1)
+			data_ptr++;
+	}
+	float sim = cosine(feat1, feat2);
+	cout << sim << endl;
+	free(net);
+	free(data);
+	end = clock();
+	dur = (double)(end - start);
+	printf("Use Time:%f\n", (dur / CLOCKS_PER_SEC));
+	return 0;
+}
